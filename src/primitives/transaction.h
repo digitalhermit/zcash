@@ -13,16 +13,12 @@
 
 #include <boost/array.hpp>
 
-#include "libzerocash/ZerocashParams.h"
-#include "libzerocash/PourInput.h"
-#include "libzerocash/PourOutput.h"
+#include "zcash/NoteEncryption.hpp"
+#include "zcash/Zcash.h"
+#include "zcash/JoinSplit.hpp"
+#include "zcash/Proof.hpp"
 
-using namespace libzerocash;
-
-static const unsigned int NUM_POUR_INPUTS = 2;
-static const unsigned int NUM_POUR_OUTPUTS = 2;
-
-class CPourTx
+class JSDescription
 {
 public:
     // These values 'enter from' and 'exit to' the value
@@ -30,63 +26,63 @@ public:
     CAmount vpub_old;
     CAmount vpub_new;
 
-    // These scripts are used to bind a Pour to the outer
-    // transaction it is placed in. The Pour will
-    // authenticate the hash of the scriptPubKey, and the
-    // provided scriptSig with be appended during
-    // transaction verification.
-    CScript scriptPubKey;
-    CScript scriptSig;
-
-    // Pours are always anchored to a root in the bucket
+    // JoinSplits are always anchored to a root in the note
     // commitment tree at some point in the blockchain
     // history or in the history of the current
     // transaction.
     uint256 anchor;
 
-    // Serials are used to prevent double-spends. They
-    // are derived from the secrets placed in the bucket
+    // Nullifiers are used to prevent double-spends. They
+    // are derived from the secrets placed in the note
     // and the secret spend-authority key known by the
     // spender.
-    boost::array<uint256, NUM_POUR_INPUTS> serials;
+    boost::array<uint256, ZC_NUM_JS_INPUTS> nullifiers;
 
-    // Bucket commitments are introduced into the commitment
+    // Note commitments are introduced into the commitment
     // tree, blinding the public about the values and
-    // destinations involved in the Pour. The presence of a
-    // commitment in the bucket commitment tree is required
+    // destinations involved in the JoinSplit. The presence of
+    // a commitment in the note commitment tree is required
     // to spend it.
-    boost::array<uint256, NUM_POUR_OUTPUTS> commitments;
+    boost::array<uint256, ZC_NUM_JS_OUTPUTS> commitments;
+
+    // Ephemeral key
+    uint256 ephemeralKey;
 
     // Ciphertexts
-    // These are encrypted using ECIES. They are used to
-    // transfer metadata and seeds to generate trapdoors
-    // for the recipient to spend the value.
-    boost::array<std::string, NUM_POUR_OUTPUTS> ciphertexts;
+    // These contain trapdoors, values and other information
+    // that the recipient needs, including a memo field. It
+    // is encrypted using the scheme implemented in crypto/NoteEncryption.cpp
+    boost::array<ZCNoteEncryption::Ciphertext, ZC_NUM_JS_OUTPUTS> ciphertexts;
+
+    // Random seed
+    uint256 randomSeed;
 
     // MACs
-    // The verification of the pour requires these MACs
+    // The verification of the JoinSplit requires these MACs
     // to be provided as an input.
-    boost::array<uint256, NUM_POUR_INPUTS> macs;
+    boost::array<uint256, ZC_NUM_JS_INPUTS> macs;
 
-    // Pour proof
-    // This is a zk-SNARK which ensures that this pour is valid.
-    std::string proof;
+    // JoinSplit proof
+    // This is a zk-SNARK which ensures that this JoinSplit is valid.
+    libzcash::ZCProof proof;
 
-    CPourTx(): vpub_old(0), vpub_new(0), scriptPubKey(), scriptSig(), anchor(), serials(), commitments(), ciphertexts(), macs(), proof() {
-        
-    }
+    JSDescription(): vpub_old(0), vpub_new(0) { }
 
-    CPourTx(ZerocashParams& params,
-            const CScript& scriptPubKey,
+    JSDescription(ZCJoinSplit& params,
+            const uint256& pubKeyHash,
             const uint256& rt,
-            const boost::array<PourInput, NUM_POUR_INPUTS>& inputs,
-            const boost::array<PourOutput, NUM_POUR_OUTPUTS>& outputs,
+            const boost::array<libzcash::JSInput, ZC_NUM_JS_INPUTS>& inputs,
+            const boost::array<libzcash::JSOutput, ZC_NUM_JS_OUTPUTS>& outputs,
             CAmount vpub_old,
-            CAmount vpub_new
+            CAmount vpub_new,
+            bool computeProof = true // Set to false in some tests
     );
 
-    // Verifies that the pour proof is correct.
-    bool Verify(ZerocashParams& params) const;
+    // Verifies that the JoinSplit proof is correct.
+    bool Verify(ZCJoinSplit& params, const uint256& pubKeyHash) const;
+
+    // Returns the calculated h_sig
+    uint256 h_sig(ZCJoinSplit& params, const uint256& pubKeyHash) const;
 
     ADD_SERIALIZE_METHODS;
 
@@ -94,33 +90,33 @@ public:
     inline void SerializationOp(Stream& s, Operation ser_action, int nType, int nVersion) {
         READWRITE(vpub_old);
         READWRITE(vpub_new);
-        READWRITE(scriptPubKey);
-        READWRITE(scriptSig);
         READWRITE(anchor);
-        READWRITE(serials);
+        READWRITE(nullifiers);
         READWRITE(commitments);
-        READWRITE(ciphertexts);
+        READWRITE(ephemeralKey);
+        READWRITE(randomSeed);
         READWRITE(macs);
         READWRITE(proof);
+        READWRITE(ciphertexts);
     }
 
-    friend bool operator==(const CPourTx& a, const CPourTx& b)
+    friend bool operator==(const JSDescription& a, const JSDescription& b)
     {
         return (
             a.vpub_old == b.vpub_old &&
             a.vpub_new == b.vpub_new &&
-            a.scriptPubKey == b.scriptPubKey &&
-            a.scriptSig == b.scriptSig &&
             a.anchor == b.anchor &&
-            a.serials == b.serials &&
+            a.nullifiers == b.nullifiers &&
             a.commitments == b.commitments &&
+            a.ephemeralKey == b.ephemeralKey &&
             a.ciphertexts == b.ciphertexts &&
+            a.randomSeed == b.randomSeed &&
             a.macs == b.macs &&
             a.proof == b.proof
             );
     }
 
-    friend bool operator!=(const CPourTx& a, const CPourTx& b)
+    friend bool operator!=(const JSDescription& a, const JSDescription& b)
     {
         return !(a == b);
     }
@@ -296,6 +292,8 @@ private:
     void UpdateHash() const;
 
 public:
+    typedef boost::array<unsigned char, 64> joinsplit_sig_t;
+
     static const int32_t CURRENT_VERSION=1;
 
     // The local variables are made const to prevent unintended modification
@@ -307,7 +305,9 @@ public:
     const std::vector<CTxIn> vin;
     const std::vector<CTxOut> vout;
     const uint32_t nLockTime;
-    const std::vector<CPourTx> vpour;
+    const std::vector<JSDescription> vjoinsplit;
+    const uint256 joinSplitPubKey;
+    const joinsplit_sig_t joinSplitSig;
 
     /** Construct a CTransaction that qualifies as IsNull() */
     CTransaction();
@@ -327,7 +327,11 @@ public:
         READWRITE(*const_cast<std::vector<CTxOut>*>(&vout));
         READWRITE(*const_cast<uint32_t*>(&nLockTime));
         if (nVersion >= 2) {
-            READWRITE(*const_cast<std::vector<CPourTx>*>(&vpour));
+            READWRITE(*const_cast<std::vector<JSDescription>*>(&vjoinsplit));
+            if (vjoinsplit.size() > 0) {
+                READWRITE(*const_cast<uint256*>(&joinSplitPubKey));
+                READWRITE(*const_cast<joinsplit_sig_t*>(&joinSplitSig));
+            }
         }
         if (ser_action.ForRead())
             UpdateHash();
@@ -346,8 +350,8 @@ public:
     // GetValueIn() is a method on CCoinsViewCache, because
     // inputs must be known to compute value in.
 
-    // Return sum of pour vpub_new
-    CAmount GetPourValueIn() const;
+    // Return sum of JoinSplit vpub_new
+    CAmount GetJoinSplitValueIn() const;
 
     // Compute priority, given priority of inputs and (optionally) tx size
     double ComputePriority(double dPriorityInputs, unsigned int nTxSize=0) const;
@@ -380,7 +384,9 @@ struct CMutableTransaction
     std::vector<CTxIn> vin;
     std::vector<CTxOut> vout;
     uint32_t nLockTime;
-    std::vector<CPourTx> vpour;
+    std::vector<JSDescription> vjoinsplit;
+    uint256 joinSplitPubKey;
+    CTransaction::joinsplit_sig_t joinSplitSig;
 
     CMutableTransaction();
     CMutableTransaction(const CTransaction& tx);
@@ -395,7 +401,11 @@ struct CMutableTransaction
         READWRITE(vout);
         READWRITE(nLockTime);
         if (nVersion >= 2) {
-            READWRITE(vpour);
+            READWRITE(vjoinsplit);
+            if (vjoinsplit.size() > 0) {
+                READWRITE(joinSplitPubKey);
+                READWRITE(joinSplitSig);
+            }
         }
     }
 

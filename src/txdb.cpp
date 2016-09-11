@@ -18,7 +18,7 @@
 using namespace std;
 
 static const char DB_ANCHOR = 'A';
-static const char DB_SERIAL = 's';
+static const char DB_NULLIFIER = 's';
 static const char DB_COINS = 'c';
 static const char DB_BLOCK_FILES = 'f';
 static const char DB_TXINDEX = 't';
@@ -33,21 +33,21 @@ static const char DB_LAST_BLOCK = 'l';
 
 void static BatchWriteAnchor(CLevelDBBatch &batch,
                              const uint256 &croot,
-                             const libzerocash::IncrementalMerkleTree &tree,
+                             const ZCIncrementalMerkleTree &tree,
                              const bool &entered)
 {
     if (!entered)
         batch.Erase(make_pair(DB_ANCHOR, croot));
     else {
-        batch.Write(make_pair(DB_ANCHOR, croot), tree.serialize());
+        batch.Write(make_pair(DB_ANCHOR, croot), tree);
     }
 }
 
-void static BatchWriteSerial(CLevelDBBatch &batch, const uint256 &serial, const bool &entered) {
+void static BatchWriteNullifier(CLevelDBBatch &batch, const uint256 &nf, const bool &entered) {
     if (!entered)
-        batch.Erase(make_pair(DB_SERIAL, serial));
+        batch.Erase(make_pair(DB_NULLIFIER, nf));
     else
-        batch.Write(make_pair(DB_SERIAL, serial), true);
+        batch.Write(make_pair(DB_NULLIFIER, nf), true);
 }
 
 void static BatchWriteCoins(CLevelDBBatch &batch, const uint256 &hash, const CCoins &coins) {
@@ -69,29 +69,21 @@ CCoinsViewDB::CCoinsViewDB(size_t nCacheSize, bool fMemory, bool fWipe) : db(Get
 }
 
 
-bool CCoinsViewDB::GetAnchorAt(const uint256 &rt, libzerocash::IncrementalMerkleTree &tree) const {
-    if (rt.IsNull()) {
-        IncrementalMerkleTree new_tree(INCREMENTAL_MERKLE_TREE_DEPTH);
-        tree.setTo(new_tree);
+bool CCoinsViewDB::GetAnchorAt(const uint256 &rt, ZCIncrementalMerkleTree &tree) const {
+    if (rt == ZCIncrementalMerkleTree::empty_root()) {
+        ZCIncrementalMerkleTree new_tree;
+        tree = new_tree;
         return true;
     }
 
-    std::vector<unsigned char> tree_serialized;
+    bool read = db.Read(make_pair(DB_ANCHOR, rt), tree);
 
-    bool read = db.Read(make_pair(DB_ANCHOR, rt), tree_serialized);
-
-    if (!read) return read;
-
-    auto tree_deserialized = IncrementalMerkleTreeCompact::deserialize(tree_serialized);
-
-    tree.fromCompactRepresentation(tree_deserialized);
-
-    return true;
+    return read;
 }
 
-bool CCoinsViewDB::GetSerial(const uint256 &serial) const {
+bool CCoinsViewDB::GetNullifier(const uint256 &nf) const {
     bool spent = false;
-    bool read = db.Read(make_pair(DB_SERIAL, serial), spent);
+    bool read = db.Read(make_pair(DB_NULLIFIER, nf), spent);
 
     return read;
 }
@@ -114,7 +106,7 @@ uint256 CCoinsViewDB::GetBestBlock() const {
 uint256 CCoinsViewDB::GetBestAnchor() const {
     uint256 hashBestAnchor;
     if (!db.Read(DB_BEST_ANCHOR, hashBestAnchor))
-        return uint256();
+        return ZCIncrementalMerkleTree::empty_root();
     return hashBestAnchor;
 }
 
@@ -122,7 +114,7 @@ bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins,
                               const uint256 &hashBlock,
                               const uint256 &hashAnchor,
                               CAnchorsMap &mapAnchors,
-                              CSerialsMap &mapSerials) {
+                              CNullifiersMap &mapNullifiers) {
     CLevelDBBatch batch;
     size_t count = 0;
     size_t changed = 0;
@@ -145,13 +137,13 @@ bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins,
         mapAnchors.erase(itOld);
     }
 
-    for (CSerialsMap::iterator it = mapSerials.begin(); it != mapSerials.end();) {
-        if (it->second.flags & CSerialsCacheEntry::DIRTY) {
-            BatchWriteSerial(batch, it->first, it->second.entered);
+    for (CNullifiersMap::iterator it = mapNullifiers.begin(); it != mapNullifiers.end();) {
+        if (it->second.flags & CNullifiersCacheEntry::DIRTY) {
+            BatchWriteNullifier(batch, it->first, it->second.entered);
             // TODO: changed++?
         }
-        CSerialsMap::iterator itOld = it++;
-        mapSerials.erase(itOld);
+        CNullifiersMap::iterator itOld = it++;
+        mapNullifiers.erase(itOld);
     }
 
     if (!hashBlock.IsNull())
@@ -308,6 +300,7 @@ bool CBlockTreeDB::LoadBlockIndexGuts()
                 pindexNew->nTime          = diskindex.nTime;
                 pindexNew->nBits          = diskindex.nBits;
                 pindexNew->nNonce         = diskindex.nNonce;
+                pindexNew->nSolution      = diskindex.nSolution;
                 pindexNew->nStatus        = diskindex.nStatus;
                 pindexNew->nTx            = diskindex.nTx;
 

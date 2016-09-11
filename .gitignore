@@ -4,9 +4,16 @@
 src/bitcoin
 src/zcashd
 src/zcash-cli
+src/zcash-gtest
 src/bitcoin-tx
 src/test/test_bitcoin
 src/qt/test/test_bitcoin-qt
+
+# Zcash utilities
+src/zcash/GenerateParams
+
+*zcashTest.pk
+*zcashTest.vk
 
 # autoreconf
 Makefile.in
@@ -94,8 +101,10 @@ build
 
 #lcov
 *.gcno
+*.gcda
 /*.info
 test_bitcoin.coverage/
+zcash-gtest.coverage/
 total.coverage/
 coverage_percent.txt
 

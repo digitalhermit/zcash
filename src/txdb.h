@@ -14,8 +14,6 @@
 #include <utility>
 #include <vector>
 
-#include "libzerocash/IncrementalMerkleTree.h"
-
 class CBlockFileInfo;
 class CBlockIndex;
 struct CDiskTxPos;
@@ -36,8 +34,8 @@ protected:
 public:
     CCoinsViewDB(size_t nCacheSize, bool fMemory = false, bool fWipe = false);
 
-    bool GetAnchorAt(const uint256 &rt, libzerocash::IncrementalMerkleTree &tree) const;
-    bool GetSerial(const uint256 &serial) const;
+    bool GetAnchorAt(const uint256 &rt, ZCIncrementalMerkleTree &tree) const;
+    bool GetNullifier(const uint256 &nf) const;
     bool GetCoins(const uint256 &txid, CCoins &coins) const;
     bool HaveCoins(const uint256 &txid) const;
     uint256 GetBestBlock() const;
@@ -46,7 +44,7 @@ public:
                     const uint256 &hashBlock,
                     const uint256 &hashAnchor,
                     CAnchorsMap &mapAnchors,
-                    CSerialsMap &mapSerials);
+                    CNullifiersMap &mapNullifiers);
     bool GetStats(CCoinsStats &stats) const;
 };
 

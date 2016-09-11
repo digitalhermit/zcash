@@ -2,8 +2,6 @@
 #
 # Execute all of the automated tests related to Zcash.
 #
-# This script will someday define part of our acceptance criteria for
-# pull requests.
 
 set -eu
 
@@ -28,6 +26,7 @@ function run_test_phase
 cd "${REPOROOT}"
 
 # Test phases:
+run_test_phase "${REPOROOT}/qa/zcash/check-security-hardening.sh"
 run_test_phase "${REPOROOT}/qa/zcash/ensure-no-dot-so-in-depends.py"
 
 # If make check fails, show test-suite.log as part of our run_test_phase

@@ -8,6 +8,7 @@
 #include "consensus/consensus.h"
 #include "consensus/validation.h"
 #include "core_io.h"
+#include "crypto/equihash.h"
 #include "init.h"
 #include "main.h"
 #include "miner.h"
@@ -32,7 +33,7 @@ using namespace std;
 
 /**
  * Return average network hashes per second based on the last 'lookup' blocks,
- * or from the last difficulty change if 'lookup' is nonpositive.
+ * or over the difficulty averaging window if 'lookup' is nonpositive.
  * If 'height' is nonnegative, compute the estimate at the time when a given block was found.
  */
 Value GetNetworkHashPS(int lookup, int height) {
@@ -44,9 +45,9 @@ Value GetNetworkHashPS(int lookup, int height) {
     if (pb == NULL || !pb->nHeight)
         return 0;
 
-    // If lookup is -1, then use blocks since last difficulty change.
+    // If lookup is nonpositive, then use difficulty averaging window.
     if (lookup <= 0)
-        lookup = pb->nHeight % Params().GetConsensus().DifficultyAdjustmentInterval() + 1;
+        lookup = Params().GetConsensus().nPowAveragingWindow;
 
     // If lookup is larger than chain, then set it to chain length.
     if (lookup > pb->nHeight)
@@ -78,10 +79,10 @@ Value getnetworkhashps(const Array& params, bool fHelp)
         throw runtime_error(
             "getnetworkhashps ( blocks height )\n"
             "\nReturns the estimated network hashes per second based on the last n blocks.\n"
-            "Pass in [blocks] to override # of blocks, -1 specifies since last difficulty change.\n"
+            "Pass in [blocks] to override # of blocks, -1 specifies over difficulty averaging window.\n"
             "Pass in [height] to estimate the network speed at the time when a certain block was found.\n"
             "\nArguments:\n"
-            "1. blocks     (numeric, optional, default=120) The number of blocks, or -1 for blocks since last difficulty change.\n"
+            "1. blocks     (numeric, optional, default=120) The number of blocks, or -1 for blocks over difficulty averaging window.\n"
             "2. height     (numeric, optional, default=-1) To estimate at the time of the given height.\n"
             "\nResult:\n"
             "x             (numeric) Hashes per second estimated\n"
@@ -101,7 +102,7 @@ Value getgenerate(const Array& params, bool fHelp)
         throw runtime_error(
             "getgenerate\n"
             "\nReturn if the server is set to generate coins or not. The default is false.\n"
-            "It is set with the command line argument -gen (or bitcoin.conf setting gen)\n"
+            "It is set with the command line argument -gen (or zcash.conf setting gen)\n"
             "It can also be set with the setgenerate call.\n"
             "\nResult\n"
             "true|false      (boolean) If the server is set to generate coins or not\n"
@@ -149,6 +150,8 @@ Value generate(const Array& params, bool fHelp)
     }
     unsigned int nExtraNonce = 0;
     Array blockHashes;
+    unsigned int n = Params().EquihashN();
+    unsigned int k = Params().EquihashK();
     while (nHeight < nHeightEnd)
     {
         auto_ptr<CBlockTemplate> pblocktemplate(CreateNewBlockWithKey(reservekey));
@@ -159,11 +162,41 @@ Value generate(const Array& params, bool fHelp)
             LOCK(cs_main);
             IncrementExtraNonce(pblock, chainActive.Tip(), nExtraNonce);
         }
-        while (!CheckProofOfWork(pblock->GetHash(), pblock->nBits, Params().GetConsensus())) {
+
+        // Hash state
+        crypto_generichash_blake2b_state eh_state;
+        EhInitialiseState(n, k, eh_state);
+
+        // I = the block header minus nonce and solution.
+        CEquihashInput I{*pblock};
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << I;
+
+        // H(I||...
+        crypto_generichash_blake2b_update(&eh_state, (unsigned char*)&ss[0], ss.size());
+
+        while (true) {
             // Yes, there is a chance every nonce could fail to satisfy the -regtest
-            // target -- 1 in 2^(2^32). That ain't gonna happen.
-            ++pblock->nNonce;
+            // target -- 1 in 2^(2^256). That ain't gonna happen
+            pblock->nNonce = ArithToUint256(UintToArith256(pblock->nNonce) + 1);
+
+            // H(I||V||...
+            crypto_generichash_blake2b_state curr_state;
+            curr_state = eh_state;
+            crypto_generichash_blake2b_update(&curr_state,
+                                              pblock->nNonce.begin(),
+                                              pblock->nNonce.size());
+
+            // (x_1, x_2, ...) = A(I, V, n, k)
+            std::function<bool(std::vector<unsigned char>)> validBlock =
+                    [&pblock](std::vector<unsigned char> soln) {
+                pblock->nSolution = soln;
+                return CheckProofOfWork(pblock->GetHash(), pblock->nBits, Params().GetConsensus());
+            };
+            if (EhBasicSolveUncancellable(n, k, curr_state, validBlock))
+                goto endloop;
         }
+endloop:
         CValidationState state;
         if (!ProcessNewBlock(state, NULL, pblock, true, NULL))
             throw JSONRPCError(RPC_INTERNAL_ERROR, "ProcessNewBlock, block not accepted");
@@ -253,7 +286,7 @@ Value getmininginfo(const Array& params, bool fHelp)
     obj.push_back(Pair("blocks",           (int)chainActive.Height()));
     obj.push_back(Pair("currentblocksize", (uint64_t)nLastBlockSize));
     obj.push_back(Pair("currentblocktx",   (uint64_t)nLastBlockTx));
-    obj.push_back(Pair("difficulty",       (double)GetDifficulty()));
+    obj.push_back(Pair("difficulty",       (double)GetNetworkDifficulty()));
     obj.push_back(Pair("errors",           GetWarnings("statusbar")));
     obj.push_back(Pair("genproclimit",     (int)GetArg("-genproclimit", -1)));
     obj.push_back(Pair("networkhashps",    getnetworkhashps(params, false)));
@@ -519,7 +552,7 @@ Value getblocktemplate(const Array& params, bool fHelp)
 
     // Update nTime
     UpdateTime(pblock, Params().GetConsensus(), pindexPrev);
-    pblock->nNonce = 0;
+    pblock->nNonce = uint256();
 
     static const Array aCaps = boost::assign::list_of("proposal");
 
@@ -726,4 +759,39 @@ Value estimatepriority(const Array& params, bool fHelp)
         nBlocks = 1;
 
     return mempool.estimatePriority(nBlocks);
+}
+
+Value getblocksubsidy(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 1)
+        throw runtime_error(
+            "getblocksubsidy height\n"
+            "\nReturns block subsidy reward, taking into account the mining slow start and the founders reward, of block at index provided.\n"
+            "\nArguments:\n"
+            "1. height         (numeric, optional) The block height.  If not provided, defaults to the current height of the chain.\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"miner\" : x.xxx           (numeric) The mining reward amount in ZEC.\n"
+            "  \"founders\" : x.xxx        (numeric) The founders reward amount in ZEC.\n"
+            "}\n"
+            "\nExamples:\n"
+            + HelpExampleCli("getblocksubsidy", "1000")
+            + HelpExampleRpc("getblockubsidy", "1000")
+        );
+
+    LOCK(cs_main);
+    int nHeight = (params.size()==1) ? params[0].get_int() : chainActive.Height();
+    if (nHeight < 0)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Block height out of range");
+
+    CAmount nReward = GetBlockSubsidy(nHeight, Params().GetConsensus());
+    CAmount nFoundersReward = 0;
+    if ((nHeight > 0) && (nHeight < Params().GetConsensus().nSubsidyHalvingInterval)) {
+        nFoundersReward = nReward/5;
+        nReward -= nFoundersReward;
+    }
+    Object result;
+    result.push_back(Pair("miner", ValueFromAmount(nReward)));
+    result.push_back(Pair("founders", ValueFromAmount(nFoundersReward)));
+    return result;
 }

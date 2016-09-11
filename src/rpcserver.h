@@ -14,11 +14,13 @@
 #include <map>
 #include <stdint.h>
 #include <string>
+#include <memory>
 
 #include "json/json_spirit_reader_template.h"
 #include "json/json_spirit_utils.h"
 #include "json/json_spirit_writer_template.h"
 
+class AsyncRPCQueue;
 class CRPCCommand;
 
 namespace RPCServer
@@ -54,6 +56,10 @@ void StartDummyRPCThread();
 void StopRPCThreads();
 /** Query whether RPC is running */
 bool IsRPCRunning();
+
+/** Get the async queue*/
+std::shared_ptr<AsyncRPCQueue> getAsyncRPCQueue();
+
 
 /** 
  * Set the RPC warmup status.  When this is done, all RPC calls will error out
@@ -140,6 +146,7 @@ extern int64_t nWalletUnlockTime;
 extern CAmount AmountFromValue(const json_spirit::Value& value);
 extern json_spirit::Value ValueFromAmount(const CAmount& amount);
 extern double GetDifficulty(const CBlockIndex* blockindex = NULL);
+extern double GetNetworkDifficulty(const CBlockIndex* blockindex = NULL);
 extern std::string HelpRequiringPassphrase();
 extern std::string HelpExampleCli(std::string methodname, std::string args);
 extern std::string HelpExampleRpc(std::string methodname, std::string args);
@@ -208,9 +215,11 @@ extern json_spirit::Value getblockchaininfo(const json_spirit::Array& params, bo
 extern json_spirit::Value getnetworkinfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value setmocktime(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value resendwallettransactions(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value zc_benchmark(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value zc_raw_keygen(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value zc_raw_pour(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value zc_raw_joinsplit(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value zc_raw_receive(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value zc_sample_joinsplit(const json_spirit::Array& params, bool fHelp);
 
 extern json_spirit::Value getrawtransaction(const json_spirit::Array& params, bool fHelp); // in rcprawtransaction.cpp
 extern json_spirit::Value listunspent(const json_spirit::Array& params, bool fHelp);
@@ -238,6 +247,23 @@ extern json_spirit::Value verifychain(const json_spirit::Array& params, bool fHe
 extern json_spirit::Value getchaintips(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value invalidateblock(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value reconsiderblock(const json_spirit::Array& params, bool fHelp);
+
+extern json_spirit::Value getblocksubsidy(const json_spirit::Array& params, bool fHelp);
+
+extern json_spirit::Value z_exportkey(const json_spirit::Array& params, bool fHelp); // in rpcdump.cpp
+extern json_spirit::Value z_importkey(const json_spirit::Array& params, bool fHelp); // in rpcdump.cpp
+extern json_spirit::Value z_getnewaddress(const json_spirit::Array& params, bool fHelp); // in rpcwallet.cpp
+extern json_spirit::Value z_listaddresses(const json_spirit::Array& params, bool fHelp); // in rpcwallet.cpp
+extern json_spirit::Value z_exportwallet(const json_spirit::Array& params, bool fHelp); // in rpcdump.cpp
+extern json_spirit::Value z_importwallet(const json_spirit::Array& params, bool fHelp); // in rpcdump.cpp
+extern json_spirit::Value z_listreceivedbyaddress(const json_spirit::Array& params, bool fHelp); // in rpcwallet.cpp
+extern json_spirit::Value z_getbalance(const json_spirit::Array& params, bool fHelp); // in rpcwallet.cpp
+extern json_spirit::Value z_gettotalbalance(const json_spirit::Array& params, bool fHelp); // in rpcwallet.cpp
+extern json_spirit::Value z_sendmany(const json_spirit::Array& params, bool fHelp); // in rpcwallet.cpp
+extern json_spirit::Value z_getoperationstatus(const json_spirit::Array& params, bool fHelp); // in rpcwallet.cpp
+extern json_spirit::Value z_getoperationresult(const json_spirit::Array& params, bool fHelp); // in rpcwallet.cpp
+extern json_spirit::Value z_listoperationids(const json_spirit::Array& params, bool fHelp); // in rpcwallet.cpp
+
 
 // in rest.cpp
 extern bool HTTPReq_REST(AcceptedConnection *conn,

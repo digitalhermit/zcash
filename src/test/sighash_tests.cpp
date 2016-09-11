@@ -12,6 +12,7 @@
 #include "test/test_bitcoin.h"
 #include "util.h"
 #include "version.h"
+#include "sodium.h"
 
 #include <iostream>
 
@@ -80,6 +81,9 @@ uint256 static SignatureHashOld(CScript scriptCode, const CTransaction& txTo, un
         txTmp.vin.resize(1);
     }
 
+    // Blank out the joinsplit signature.
+    memset(&txTmp.joinSplitSig[0], 0, txTmp.joinSplitSig.size());
+
     // Serialize and hash
     CHashWriter ss(SER_GETHASH, 0);
     ss << txTmp << nHashType;
@@ -101,7 +105,7 @@ void static RandomTransaction(CMutableTransaction &tx, bool fSingle) {
     tx.nLockTime = (insecure_rand() % 2) ? insecure_rand() : 0;
     int ins = (insecure_rand() % 4) + 1;
     int outs = fSingle ? ins : (insecure_rand() % 4) + 1;
-    int pours = (insecure_rand() % 4);
+    int joinsplits = (insecure_rand() % 4);
     for (int in = 0; in < ins; in++) {
         tx.vin.push_back(CTxIn());
         CTxIn &txin = tx.vin.back();
@@ -117,30 +121,40 @@ void static RandomTransaction(CMutableTransaction &tx, bool fSingle) {
         RandomScript(txout.scriptPubKey);
     }
     if (tx.nVersion >= 2) {
-        for (int pour = 0; pour < pours; pour++) {
-            CPourTx pourtx;
-            pourtx.vpub_old = insecure_rand() % 100000000;
-            pourtx.vpub_new = insecure_rand() % 100000000;
-            RandomScript(pourtx.scriptPubKey);
-            RandomScript(pourtx.scriptSig);
-            pourtx.anchor = GetRandHash();
-            pourtx.serials[0] = GetRandHash();
-            pourtx.serials[1] = GetRandHash();
-            pourtx.ciphertexts[0] = {insecure_rand() % 100, insecure_rand() % 100};
-            pourtx.ciphertexts[1] = {insecure_rand() % 100, insecure_rand() % 100};
-            pourtx.macs[0] = GetRandHash();
-            pourtx.macs[1] = GetRandHash();
-            {
-                std::vector<unsigned char> txt;
-                int prooflen = insecure_rand() % 1000;
-                for (int i = 0; i < prooflen; i++) {
-                    txt.push_back(insecure_rand() % 256);
-                }
-                pourtx.proof = std::string(txt.begin(), txt.end());
+        for (int js = 0; js < joinsplits; js++) {
+            JSDescription jsdesc;
+            if (insecure_rand() % 2 == 0) {
+                jsdesc.vpub_old = insecure_rand() % 100000000;
+            } else {
+                jsdesc.vpub_new = insecure_rand() % 100000000;
             }
 
-            tx.vpour.push_back(pourtx);
+            jsdesc.anchor = GetRandHash();
+            jsdesc.nullifiers[0] = GetRandHash();
+            jsdesc.nullifiers[1] = GetRandHash();
+            jsdesc.ephemeralKey = GetRandHash();
+            jsdesc.randomSeed = GetRandHash();
+            randombytes_buf(jsdesc.ciphertexts[0].begin(), jsdesc.ciphertexts[0].size());
+            randombytes_buf(jsdesc.ciphertexts[1].begin(), jsdesc.ciphertexts[1].size());
+            jsdesc.proof = libzcash::ZCProof::random_invalid();
+            jsdesc.macs[0] = GetRandHash();
+            jsdesc.macs[1] = GetRandHash();
+
+            tx.vjoinsplit.push_back(jsdesc);
         }
+
+        unsigned char joinSplitPrivKey[crypto_sign_SECRETKEYBYTES];
+        crypto_sign_keypair(tx.joinSplitPubKey.begin(), joinSplitPrivKey);
+
+        // Empty output script.
+        CScript scriptCode;
+        CTransaction signTx(tx);
+        uint256 dataToBeSigned = SignatureHash(scriptCode, signTx, NOT_AN_INPUT, SIGHASH_ALL);
+
+        assert(crypto_sign_detached(&tx.joinSplitSig[0], NULL,
+                                    dataToBeSigned.begin(), 32,
+                                    joinSplitPrivKey
+                                    ) == 0);
     }
 }
 
@@ -227,8 +241,7 @@ BOOST_AUTO_TEST_CASE(sighash_from_data)
           stream >> tx;
 
           CValidationState state;
-          state.SetPerformPourVerification(false); // don't verify the snark
-          BOOST_CHECK_MESSAGE(CheckTransaction(tx, state), strTest);
+          BOOST_CHECK_MESSAGE(CheckTransactionWithoutProofVerification(tx, state), strTest);
           BOOST_CHECK(state.IsValid());
 
           std::vector<unsigned char> raw = ParseHex(raw_script);

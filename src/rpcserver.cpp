@@ -15,6 +15,9 @@
 #ifdef ENABLE_WALLET
 #include "wallet/wallet.h"
 #endif
+#include "asyncrpcqueue.h"
+
+#include <memory>
 
 #include <boost/algorithm/string.hpp>
 #include <boost/asio.hpp>
@@ -254,10 +257,10 @@ Value stop(const Array& params, bool fHelp)
     if (fHelp || params.size() > 1)
         throw runtime_error(
             "stop\n"
-            "\nStop Bitcoin server.");
+            "\nStop Zcash server.");
     // Shutdown will take long enough that the response should get back
     StartShutdown();
-    return "Bitcoin server stopping";
+    return "Zcash server stopping";
 }
 
 
@@ -304,6 +307,7 @@ static const CRPCCommand vRPCCommands[] =
     { "mining",             "getnetworkhashps",       &getnetworkhashps,       true  },
     { "mining",             "prioritisetransaction",  &prioritisetransaction,  true  },
     { "mining",             "submitblock",            &submitblock,            true  },
+    { "mining",             "getblocksubsidy",        &getblocksubsidy,        true  },
 
 #ifdef ENABLE_WALLET
     /* Coin generation */
@@ -376,9 +380,24 @@ static const CRPCCommand vRPCCommands[] =
     { "wallet",             "walletlock",             &walletlock,             true  },
     { "wallet",             "walletpassphrasechange", &walletpassphrasechange, true  },
     { "wallet",             "walletpassphrase",       &walletpassphrase,       true  },
+    { "wallet",             "zcbenchmark",            &zc_benchmark,           true  },
     { "wallet",             "zcrawkeygen",            &zc_raw_keygen,          true  },
-    { "wallet",             "zcrawpour",              &zc_raw_pour,            true  },
-    { "wallet",             "zcrawreceive",           &zc_raw_receive,         true  }
+    { "wallet",             "zcrawjoinsplit",         &zc_raw_joinsplit,       true  },
+    { "wallet",             "zcrawreceive",           &zc_raw_receive,         true  },
+    { "wallet",             "zcsamplejoinsplit",      &zc_sample_joinsplit,    true  },
+    { "wallet",             "z_listreceivedbyaddress",&z_listreceivedbyaddress,false },
+    { "wallet",             "z_getbalance",           &z_getbalance,           false },
+    { "wallet",             "z_gettotalbalance",      &z_gettotalbalance,      false },
+    { "wallet",             "z_sendmany",             &z_sendmany,             false },
+    { "wallet",             "z_getoperationstatus",   &z_getoperationstatus,   true  },
+    { "wallet",             "z_getoperationresult",   &z_getoperationresult,   true  },
+    { "wallet",             "z_listoperationids",     &z_listoperationids,     true  },
+    { "wallet",             "z_getnewaddress",        &z_getnewaddress,        true  },
+    { "wallet",             "z_listaddresses",        &z_listaddresses,        true  },
+    { "wallet",             "z_exportkey",            &z_exportkey,            true  },
+    { "wallet",             "z_importkey",            &z_importkey,            true  },
+    { "wallet",             "z_exportwallet",         &z_exportwallet,         true  },
+    { "wallet",             "z_importwallet",         &z_importwallet,         true  }
 #endif // ENABLE_WALLET
 };
 
@@ -728,6 +747,21 @@ void StartRPCThreads()
         rpc_worker_group->create_thread(boost::bind(&boost::asio::io_service::run, rpc_io_service));
     fRPCRunning = true;
     g_rpcSignals.Started();
+
+    // Launch one async rpc worker.  The ability to launch multiple workers is not recommended at present and thus the option is disabled.
+    getAsyncRPCQueue()->addWorker();
+/*   
+    int n = GetArg("-rpcasyncthreads", 1);
+    if (n<1) {
+        LogPrintf("ERROR: Invalid value %d for -rpcasyncthreads.  Must be at least 1.\n", n);
+        strerr = strprintf(_("An error occurred while setting up the Async RPC threads, invalid parameter value of %d (must be at least 1)."), n);
+        uiInterface.ThreadSafeMessageBox(strerr, "", CClientUIInterface::MSG_ERROR);
+        StartShutdown();
+        return;
+    }
+    for (int i = 0; i < n; i++)
+        getAsyncRPCQueue()->addWorker();
+*/
 }
 
 void StartDummyRPCThread()
@@ -777,6 +811,10 @@ void StopRPCThreads()
     delete rpc_worker_group; rpc_worker_group = NULL;
     delete rpc_ssl_context; rpc_ssl_context = NULL;
     delete rpc_io_service; rpc_io_service = NULL;
+
+    // Tells async queue to cancel all operations and shutdown.
+    LogPrintf("%s: waiting for async rpc workers to stop\n", __func__);
+    getAsyncRPCQueue()->closeAndWait();
 }
 
 bool IsRPCRunning()
@@ -1035,7 +1073,13 @@ std::string HelpExampleCli(string methodname, string args){
 
 std::string HelpExampleRpc(string methodname, string args){
     return "> curl --user myusername --data-binary '{\"jsonrpc\": \"1.0\", \"id\":\"curltest\", "
-        "\"method\": \"" + methodname + "\", \"params\": [" + args + "] }' -H 'content-type: text/plain;' http://127.0.0.1:8332/\n";
+        "\"method\": \"" + methodname + "\", \"params\": [" + args + "] }' -H 'content-type: text/plain;' http://127.0.0.1:8232/\n";
 }
 
 const CRPCTable tableRPC;
+
+// Return async rpc queue
+std::shared_ptr<AsyncRPCQueue> getAsyncRPCQueue()
+{
+    return AsyncRPCQueue::sharedInstance();
+}

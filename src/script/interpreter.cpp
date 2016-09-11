@@ -1030,6 +1030,7 @@ public:
         // Serialize the prevout
         ::Serialize(s, txTo.vin[nInput].prevout, nType, nVersion);
         // Serialize the script
+        assert(nInput != NOT_AN_INPUT);
         if (nInput != nIn)
             // Blank out other inputs' signatures
             ::Serialize(s, CScript(), nType, nVersion);
@@ -1071,24 +1072,21 @@ public:
         // Serialize nLockTime
         ::Serialize(s, txTo.nLockTime, nType, nVersion);
 
-        // Serialize vpour
+        // Serialize vjoinsplit
         if (txTo.nVersion >= 2) {
-            // TODO:
             //
             // SIGHASH_* functions will hash portions of
             // the transaction for use in signatures. This
-            // keeps the pour cryptographically bound to
-            // the transaction from the perspective of the
-            // inputs (but not from the perspective of the
-            // pour).
+            // keeps the JoinSplit cryptographically bound
+            // to the transaction.
             //
-            // This must be rectified in the future.
-            // See zcash/#529
-            //
-            // It will be necessary to change this API to
-            // be abstract over whether an input script is
-            // being skipped or a pour is being skipped.
-            ::Serialize(s, txTo.vpour, nType, nVersion);
+            ::Serialize(s, txTo.vjoinsplit, nType, nVersion);
+            if (txTo.vjoinsplit.size() > 0) {
+                ::Serialize(s, txTo.joinSplitPubKey, nType, nVersion);
+
+                CTransaction::joinsplit_sig_t nullSig = {};
+                ::Serialize(s, nullSig, nType, nVersion);
+            }
         }
     }
 };
@@ -1097,17 +1095,16 @@ public:
 
 uint256 SignatureHash(const CScript& scriptCode, const CTransaction& txTo, unsigned int nIn, int nHashType)
 {
-    static const uint256 one(uint256S("0000000000000000000000000000000000000000000000000000000000000001"));
-    if (nIn >= txTo.vin.size()) {
+    if (nIn >= txTo.vin.size() && nIn != NOT_AN_INPUT) {
         //  nIn out of range
-        return one;
+        throw logic_error("input index is out of range");
     }
 
     // Check for invalid use of SIGHASH_SINGLE
     if ((nHashType & 0x1f) == SIGHASH_SINGLE) {
         if (nIn >= txTo.vout.size()) {
             //  nOut out of range
-            return one;
+            throw logic_error("no matching output for SIGHASH_SINGLE");
         }
     }
 
@@ -1138,7 +1135,12 @@ bool TransactionSignatureChecker::CheckSig(const vector<unsigned char>& vchSigIn
     int nHashType = vchSig.back();
     vchSig.pop_back();
 
-    uint256 sighash = SignatureHash(scriptCode, *txTo, nIn, nHashType);
+    uint256 sighash;
+    try {
+        sighash = SignatureHash(scriptCode, *txTo, nIn, nHashType);
+    } catch (logic_error ex) {
+        return false;
+    }
 
     if (!VerifySignature(vchSig, pubkey, sighash))
         return false;
